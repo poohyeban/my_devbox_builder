@@ -16,7 +16,7 @@ if command -v docker >/dev/null 2>&1; then
           docker rm -f "${__devbox_ci_names[@]}" >/dev/null 2>&1 || true
         fi
         docker network rm devbox-ci-net >/dev/null 2>&1 || true
-        docker image rm devbox-ci:test >/dev/null 2>&1 || true
+        docker image rm devbox-ci-debian-bookworm:test >/dev/null 2>&1 || true
       fi
       rm -rf "$tmpdir"
     }
@@ -32,8 +32,9 @@ if command -v docker >/dev/null 2>&1; then
       bash install_devbox.sh --auto
 
     pushd "$tmpdir/work" >/dev/null
-    ./devbox.sh cli image build "devbox-ci:test"
-    ./devbox.sh cli instance start devbox-ci --image devbox-ci:test --port-base 36022 --enable-fail2ban
+    template="debian-bookworm"
+    ./devbox.sh cli image build --template "$template"
+    ./devbox.sh cli instance start devbox-ci --template "$template" --port-base 36022 --enable-fail2ban
     ./devbox.sh cli instance status devbox-ci
     ./devbox.sh cli fail2ban status devbox-ci
     ./devbox.sh cli instance password devbox-ci
@@ -41,6 +42,8 @@ if command -v docker >/dev/null 2>&1; then
       echo "[ERROR] 未生成密码文件" >&2
       exit 1
     fi
+    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKeyForTestsOnly devbox-ci@test' >"$tmpdir/testkey.pub"
+    ./devbox.sh cli instance ssh-key add devbox-ci "$tmpdir/testkey.pub"
     ./devbox.sh cli forward add devbox-ci 36080 8080
     ./devbox.sh cli forward list devbox-ci
     ./devbox.sh cli forward remove devbox-ci 36080 8080
