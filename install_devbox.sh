@@ -5,6 +5,16 @@ set -Eeuo pipefail
 SCRIPT_VERSION="2.0.0"
 DEBUG="${DEVBOX_DEBUG:-0}"
 DEBUG_LOG=""
+AUTO_MODE="${DEVBOX_AUTO:-0}"
+case "${AUTO_MODE,,}" in
+  1|y|yes|true|on)
+    AUTO_MODE=1
+    ;;
+  *)
+    AUTO_MODE=0
+    ;;
+esac
+RUN_SELF_TEST=0
 
 # ========== 调试与日志 ==========
 setup_debug() {
@@ -60,6 +70,81 @@ ui_caption() {
 progress() { local msg="$1"; printf '%b  %s' "$(color '1;36' '⏳')" "$msg"; }
 progress_done() { printf '\r%b  %s\n' "$(color '1;32' '✓')" "$1"; }
 
+print_usage() {
+  cat <<'USAGE'
+DevBox 安装助手 v2.0.0
+
+用法:
+  ./install_devbox.sh [选项]
+
+常用选项:
+  -h, --help        显示本帮助
+  --version         显示脚本版本
+  --auto, --defaults
+                    直接采用推荐配置（可通过环境变量 DEVBOX_* 覆盖），无需交互
+  --self-test       运行内建自检并退出
+
+主要环境变量:
+  DEVBOX_WORKDIR          工作目录（默认 /opt/my_dev_box）
+  DEVBOX_IMAGE_NAME       镜像名称（默认 acm-lite）
+  DEVBOX_IMAGE_TAG        镜像标签（默认 latest）
+  DEVBOX_NET_NAME         Docker 网络名称（默认 devbox-net）
+  DEVBOX_PORT_BASE        SSH 起始端口（默认 30022）
+  DEVBOX_CNAME_PREFIX     实例名前缀（默认镜像名）
+  DEVBOX_AUTO_START       y 或 n，决定是否自动创建首个实例（默认 n）
+  DEVBOX_MEM/CPUS/PIDS    资源限制（默认 1g / 1.0 / 256）
+  DEVBOX_AUTO             设为 1 等同于 --auto
+  DEVBOX_ASSUME_YES       自动对确认问题回答 "是"，适合 CI / 自动化环境
+
+示例:
+  ./install_devbox.sh
+  DEVBOX_AUTO=1 DEVBOX_WORKDIR=$HOME/devbox ./install_devbox.sh --auto
+  DEVBOX_DEBUG=1 ./install_devbox.sh --self-test
+USAGE
+}
+
+parse_args() {
+  local positional=()
+  while (($#)); do
+    case "$1" in
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      --version)
+        echo "$SCRIPT_VERSION"
+        exit 0
+        ;;
+      --self-test)
+        RUN_SELF_TEST=1
+        ;;
+      --auto|--defaults)
+        AUTO_MODE=1
+        ;;
+      --)
+        shift
+        positional+=("$@")
+        break
+        ;;
+      -*)
+        printf '未知选项: %s\n' "$1" >&2
+        print_usage >&2
+        exit 1
+        ;;
+      *)
+        positional+=("$1")
+        ;;
+    esac
+    shift || true
+  done
+
+  if ((${#positional[@]} > 0)); then
+    printf '不支持的位置参数: %s\n' "${positional[*]}" >&2
+    print_usage >&2
+    exit 1
+  fi
+}
+
 # ========== 基础工具 ==========
 has() { command -v "$1" >/dev/null 2>&1; }
 is_root() { [[ "${EUID:-$UID}" -eq 0 ]]; }
@@ -95,19 +180,75 @@ ask() {
     printf '%s\n' "$cleaned"
   fi
 }
-confirm() { local prompt="$1" def="${2:-N}"; local ans; printf '%s [y/N] → ' "$(color '1;33' "$prompt")" >&2; IFS= read -r ans; ans="${ans:-$def}"; [[ "$ans" =~ ^[Yy]$ ]]; }
+confirm() {
+  local prompt="$1" def="${2:-N}" ans
+  if [[ "${DEVBOX_ASSUME_YES:-0}" == "1" ]]; then
+    printf '%s [auto-yes]\n' "$(color '1;33' "$prompt")" >&2
+    return 0
+  fi
+  printf '%s [%s/%s] → ' "$(color '1;33' "$prompt")" "$([[ "$def" =~ [Yy] ]] && echo 'Y' || echo 'y')" "$([[ "$def" =~ [Nn] ]] && echo 'N' || echo 'n')" >&2
+  IFS= read -r ans
+  ans="${ans:-$def}"
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
 
 # ========== 预检查 ==========
-check_docker_daemon() {
-  if ! docker info >/dev/null 2>&1; then
-    err "Docker 守护进程未运行或当前用户无权限访问"
-    info "请检查："
-    ui_caption "  1. Docker 服务是否启动: systemctl status docker"
-    ui_caption "  2. 当前用户是否在 docker 组: groups"
-    ui_caption "  3. 或使用 sudo 运行本脚本"
-    exit 1
+diagnose_docker_runtime() {
+  local hints=()
+
+  if ! is_root && [[ ! -S /var/run/docker.sock ]]; then
+    hints+=("当前用户非 root，且未检测到可写的 /var/run/docker.sock。请考虑使用 sudo 运行，或将当前用户加入 docker 组。")
   fi
-  log_debug "Docker daemon check passed"
+
+  if [[ -S /var/run/docker.sock && ! -w /var/run/docker.sock ]]; then
+    hints+=("/var/run/docker.sock 存在但不可写，确认运行用户是否具备访问该套接字的权限。")
+  fi
+
+  if [[ -e /proc/sys/net/ipv4/ip_forward ]]; then
+    if [[ ! -w /proc/sys/net/ipv4/ip_forward ]]; then
+      hints+=("宿主机禁止修改 /proc/sys/net/ipv4/ip_forward（只读）。Docker 需要启用 IP 转发，若运行在受限容器中，请在宿主机上执行安装。")
+    fi
+  else
+    hints+=("未检测到 /proc/sys/net/ipv4/ip_forward，宿主机内核可能缺失必要的网络功能。")
+  fi
+
+  if has iptables; then
+    local iptables_err
+    if ! iptables -L >/dev/null 2>&1; then
+      iptables_err="$(iptables -L 2>&1 || true)"
+      iptables_err="${iptables_err%%$'\n'*}"
+      iptables_err="$(strip_control_chars "$iptables_err")"
+      hints+=("执行 iptables 失败：${iptables_err:-需要 CAP_NET_ADMIN 权限}。请在具备 NET_ADMIN 能力的环境运行。")
+    fi
+  else
+    hints+=("未安装 iptables，Docker 默认网络功能无法使用。请先安装 iptables 包。")
+  fi
+
+  if ! pgrep -x dockerd >/dev/null 2>&1; then
+    hints+=("未检测到 dockerd 进程，使用 systemctl start docker 或手动运行 dockerd 启动守护进程。")
+  fi
+
+  if (( ${#hints[@]} == 0 )); then
+    warn "未发现明显的宿主机问题，请查看 dockerd 日志以进一步排查。"
+    return
+  fi
+
+  local item
+  for item in "${hints[@]}"; do
+    warn "${item}"
+  done
+}
+
+check_docker_daemon() {
+  if docker info >/dev/null 2>&1; then
+    log_debug "Docker daemon check passed"
+    return 0
+  fi
+
+  err "Docker 守护进程未运行或当前用户无权限访问"
+  info "请检查以下可能原因："
+  diagnose_docker_runtime
+  exit 1
 }
 check_disk_space() {
   local min_mb=1024
@@ -147,7 +288,20 @@ install_docker() {
 # ========== 网络与端口 ==========
 ensure_network() { local net="$1"; docker network inspect "$net" >/dev/null 2>&1 || docker network create "$net" >/dev/null; }
 port_in_use_host() {
-  local hp="$1"
+  local hp="$1" entry
+
+  if [[ -n "${DEVBOX_RESERVED_HOST_PORTS:-}" ]]; then
+    IFS=', ' read -r -a __devbox_reserved_ports <<<"${DEVBOX_RESERVED_HOST_PORTS//,/ }"
+    for entry in "${__devbox_reserved_ports[@]}"; do
+      [[ -z "$entry" ]] && continue
+      if [[ "$entry" == "$hp" ]]; then
+        log_debug "Host port ${hp} marked as reserved via DEVBOX_RESERVED_HOST_PORTS"
+        return 0
+      fi
+    done
+    unset __devbox_reserved_ports
+  fi
+
   if timeout 0.2 bash -lc ":</dev/tcp/127.0.0.1/${hp}" 2>/dev/null; then return 0; fi
   if has ss && ss -ltn | grep -q ":${hp}\b"; then return 0; fi
   if docker ps --format '{{.Ports}}' | grep -qE "0\.0\.0\.0:${hp}->|:${hp}->"; then return 0; fi
@@ -162,7 +316,60 @@ ask_init_adv_limits() {
   DEFAULT_CPUS="${DEVBOX_CPUS:-1.0}"
   DEFAULT_PIDS="${DEVBOX_PIDS:-256}"
 }
-init_prompt() {
+init_prompt_auto() {
+  ui_title "DevBox 安装偏好" "已启用自动模式，使用环境变量或默认值完成配置。"
+
+  WORKDIR="${DEVBOX_WORKDIR:-/opt/my_dev_box}"
+  IMAGE_NAME="${DEVBOX_IMAGE_NAME:-acm-lite}"
+  if [[ ! "$IMAGE_NAME" =~ ^[a-z0-9-]+$ ]]; then
+    err "环境变量 DEVBOX_IMAGE_NAME 无效（仅限小写字母、数字和短横线）"
+    exit 1
+  fi
+  IMAGE_TAG="${DEVBOX_IMAGE_TAG:-latest}"
+  IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+  NET_NAME="${DEVBOX_NET_NAME:-devbox-net}"
+  PORT_BASE_DEFAULT="${DEVBOX_PORT_BASE:-30022}"
+  if ! validate_port "$PORT_BASE_DEFAULT"; then
+    err "环境变量 DEVBOX_PORT_BASE 必须是有效端口 (1-65535)"
+    exit 1
+  fi
+  MAX_TRIES=80
+  CNAME_PREFIX="${DEVBOX_CNAME_PREFIX:-$IMAGE_NAME}"
+  if ! validate_container_name "${CNAME_PREFIX}-test"; then
+    err "环境变量 DEVBOX_CNAME_PREFIX 无效，请仅使用字母、数字、点、下划线或短横线"
+    exit 1
+  fi
+  AUTO_START="${DEVBOX_AUTO_START:-n}"
+  AUTO_START="${AUTO_START,,}"
+  if [[ ! "$AUTO_START" =~ ^[yn]$ ]]; then
+    err "环境变量 DEVBOX_AUTO_START 只能是 y 或 n"
+    exit 1
+  fi
+
+  ask_init_adv_limits
+
+  echo
+  ui_caption "配置预览："
+  printf "   • 工作目录：%s\n" "$(color '1;37' "$WORKDIR")"
+  printf "   • 镜像：%s\n" "$(color '1;37' "$IMAGE")"
+  printf "   • 网络：%s\n" "$(color '1;37' "$NET_NAME")"
+  printf "   • SSH 端口：%s\n" "$(color '1;37' "$PORT_BASE_DEFAULT")"
+  printf "   • 实例前缀：%s\n" "$(color '1;37' "$CNAME_PREFIX")"
+  printf "   • 自动启动：%s\n" "$(color '1;37' "${AUTO_START^^}")"
+  printf "   • 资源限制：%s, %s, pids=%s\n" "$(color '1;37' "$DEFAULT_MEM")" "$(color '1;37' "$DEFAULT_CPUS")" "$(color '1;37' "$DEFAULT_PIDS")"
+
+  mkdir -p -- "$WORKDIR" "$WORKDIR/.devbox"
+  if [[ ! -w "$WORKDIR" ]]; then
+    err "工作目录不可写：$WORKDIR"
+    exit 1
+  fi
+  META_DIR="${WORKDIR}/.devbox"
+
+  setup_debug
+  log_debug "Auto initialization complete: WORKDIR=$WORKDIR IMAGE=$IMAGE NET=$NET_NAME PORTBASE=$PORT_BASE_DEFAULT"
+}
+
+init_prompt_interactive() {
   ui_title "DevBox 安装偏好" "请根据自己的环境调整参数，回车即可采用推荐值。"
 
   while true; do
@@ -223,6 +430,14 @@ init_prompt() {
   log_debug "Initialization complete: WORKDIR=$WORKDIR IMAGE=$IMAGE NET=$NET_NAME PORTBASE=$PORT_BASE_DEFAULT"
 }
 
+init_prompt() {
+  if [[ "$AUTO_MODE" == "1" ]]; then
+    init_prompt_auto
+  else
+    init_prompt_interactive
+  fi
+}
+
 # ========== Dockerfile 生成 ==========
 write_min_dockerfile() {
   if [[ -f "$WORKDIR/Dockerfile" ]]; then
@@ -268,6 +483,49 @@ WORKDIR /home/dev
 EXPOSE 22
 CMD ["/usr/sbin/sshd","-D"]
 DOCKERFILE
+}
+
+check_dockerfile_compatibility() {
+  local dockerfile="$WORKDIR/Dockerfile"
+  [[ -f "$dockerfile" ]] || return 0
+
+  local issues=()
+  if ! grep -qiE '^[[:space:]]*EXPOSE[[:space:]]+22\b' "$dockerfile"; then
+    issues+=("未检测到 EXPOSE 22；DevBox 默认期望通过 22 端口提供 SSH 服务。")
+  fi
+  if ! grep -qi 'sshd' "$dockerfile"; then
+    issues+=("Dockerfile 中未发现 sshd 相关命令，请确认容器入口能启动 SSH 服务。")
+  fi
+  if ! grep -qi 'useradd' "$dockerfile" && ! grep -qi 'adduser' "$dockerfile"; then
+    issues+=("建议为开发者准备一个非 root 账号（例如 dev），否则脚本将无法自动创建安全凭据。")
+  fi
+
+  if ((${#issues[@]} == 0)); then
+    log_debug "Dockerfile compatibility check passed"
+    return 0
+  fi
+
+  if [[ "${AUTO_MODE:-0}" == "1" ]]; then
+    err "自动模式下检测到 Dockerfile 存在以下潜在问题："
+    local warn_item
+    for warn_item in "${issues[@]}"; do
+      ui_caption "  - ${warn_item}"
+    done
+    ui_caption "请修正 Dockerfile 后重试，或在交互模式下确认继续。"
+    exit 1
+  fi
+
+  warn "检测到 Dockerfile 可能与 DevBox 管理脚本要求不完全匹配："
+  local item
+  for item in "${issues[@]}"; do
+    ui_caption "  - ${item}"
+  done
+  ui_caption "如果确认镜像使用了自定义端口或入口，请在安装后修改 devbox.sh 中的配置或使用相应菜单选项。"
+  if ! confirm "继续构建该 Dockerfile 吗？" Y; then
+    err "用户取消构建以调整 Dockerfile 配置"
+    exit 1
+  fi
+  return 0
 }
 
 # ========== 镜像构建 ==========
@@ -324,6 +582,7 @@ DevBox 管理工具 v2.0.0
 
 用法:
   ./devbox.sh [选项]
+  ./devbox.sh cli <命令> [参数]    # 非交互式子命令，适合自动化
 
 选项:
   -h, --help      显示此帮助信息
@@ -335,6 +594,8 @@ DevBox 管理工具 v2.0.0
   • 端口转发代理（通过轻量 socat 容器）
   • Fail2ban 安全保护（启用/查看/重置/卸载）
   • 密码管理和旋转
+  • DEVBOX_RESERVED_HOST_PORTS 用于声明不可占用的宿主机端口
+  • DEVBOX_ASSUME_YES=1 可在自动化脚本中跳过确认提示
 
 安全基线:
   • 严禁 --privileged、严禁挂载宿主目录或 /var/run/docker.sock
@@ -345,6 +606,7 @@ DevBox 管理工具 v2.0.0
   ./devbox.sh
   DEVBOX_DEBUG=1 ./devbox.sh
   DEVBOX_MEM=2g DEVBOX_CPUS=2 ./devbox.sh
+  ./devbox.sh cli instance start demo --enable-fail2ban
 
 HELP
   exit 0
@@ -432,7 +694,17 @@ ask_field() {
     IFS= read -r ans; echo "$ans"
   fi
 }
-confirm() { local prompt="$1"; printf '%s [y/N] → ' "$(color '1;33' "$prompt")" >&2; local ans; IFS= read -r ans; [[ "$ans" =~ ^[Yy]$ ]]; }
+confirm() {
+  local prompt="$1" def="${2:-N}" ans
+  if [[ "${DEVBOX_ASSUME_YES:-0}" == "1" ]]; then
+    printf '%s [auto-yes]\n' "$(color '1;33' "$prompt")" >&2
+    return 0
+  fi
+  printf '%s [%s/%s] → ' "$(color '1;33' "$prompt")" "$([[ "$def" =~ [Yy] ]] && echo 'Y' || echo 'y')" "$([[ "$def" =~ [Nn] ]] && echo 'N' || echo 'n')" >&2
+  IFS= read -r ans
+  ans="${ans:-$def}"
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
 
 # ========== 权限检查 ==========
 need_sudo() { ! docker info >/dev/null 2>&1; }
@@ -455,9 +727,263 @@ exists_container() { docker ps -a --format '{{.Names}}' | grep -Fqx -- "$1"; }
 running_container() { docker ps --format '{{.Names}}' | grep -Fqx -- "$1"; }
 passfile_of() { echo "${META_DIR}/$1.pass"; }
 ensure_network() { docker network inspect "${NET_NAME}" >/dev/null 2>&1 || docker network create "${NET_NAME}" >/dev/null; }
-port_in_use_host() { local hp="$1"; timeout 0.2 bash -lc ":</dev/tcp/127.0.0.1/${hp}" 2>/dev/null && return 0; command -v ss >/dev/null 2>&1 && ss -ltn | grep -q ":${hp}\b" && return 0; docker ps --format '{{.Ports}}' | grep -qE "0\.0\.0\.0:${hp}->|:${hp}->" && return 0; return 1; }
+port_in_use_host() {
+  local hp="$1" entry
+
+  if [[ -n "${DEVBOX_RESERVED_HOST_PORTS:-}" ]]; then
+    IFS=', ' read -r -a __devbox_reserved_ports <<<"${DEVBOX_RESERVED_HOST_PORTS//,/ }"
+    for entry in "${__devbox_reserved_ports[@]}"; do
+      [[ -z "$entry" ]] && continue
+      if [[ "$entry" == "$hp" ]]; then
+        log_debug "Host port ${hp} marked as reserved via DEVBOX_RESERVED_HOST_PORTS"
+        return 0
+      fi
+    done
+    unset __devbox_reserved_ports
+  fi
+
+  timeout 0.2 bash -lc ":</dev/tcp/127.0.0.1/${hp}" 2>/dev/null && return 0
+  command -v ss >/dev/null 2>&1 && ss -ltn | grep -q ":${hp}\\b" && return 0
+  docker ps --format '{{.Ports}}' | grep -qE "0\.0\.0\.0:${hp}->|:${hp}->" && return 0
+  return 1
+}
 valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1>=1 && $1<=65535 )); }
 pick_port_strict() { local base="${1:-$PORT_BASE_DEFAULT}"; for ((i=0;i<${2:-$MAX_TRIES};i++)); do local try=$((base+i*100)); port_in_use_host "$try" || { echo "$try"; return 0; }; done; return 1; }
+
+# ========== CLI 接口辅助 ==========
+cli_usage() {
+  cat <<'CLI'
+用法: ./devbox.sh cli <命令> [参数]
+
+命令:
+  image build [镜像]          构建镜像（默认使用安装时的镜像名）
+  image rebuild [镜像]        强制忽略缓存重建镜像
+  instance start <名称> [--image 镜像] [--port-base 起始端口] [--enable-fail2ban]
+  instance stop <名称>        停止容器
+  instance remove <名称>      删除容器及其记录
+  instance status <名称>      输出实例状态摘要
+  instance password <名称>    重新生成 dev 用户密码
+  fail2ban enable <名称>      安装并启动 fail2ban
+  fail2ban disable <名称>     卸载 fail2ban
+  fail2ban status <名称>      显示 fail2ban 状态和日志摘要
+  forward add <名称> <宿主端口> <容器端口> [绑定地址]
+  forward remove <名称> <宿主端口> <容器端口> [绑定地址]
+  forward list <名称>         列出端口转发映射
+  status                      列出所有已知实例状态
+  help                        显示本帮助
+
+所有 CLI 子命令默认启用 DEVBOX_ASSUME_YES=1，以方便自动化脚本使用。
+CLI
+}
+
+cli_require_name() {
+  local name="$1"
+  if [[ -z "${name:-}" ]]; then
+    err "缺少实例名称"
+    return 1
+  fi
+  echo "$name"
+}
+
+cli_instance_start() {
+  local name="$1"; shift || true
+  local image="$IMAGE_DEFAULT" port_base="$PORT_BASE_DEFAULT" enable_fail2ban=0
+  while (($#)); do
+    case "$1" in
+      --image)
+        image="$2"; shift 2 || return 1 ;;
+      --port-base)
+        port_base="$2"; shift 2 || return 1 ;;
+      --enable-fail2ban)
+        enable_fail2ban=1; shift ;;
+      *)
+        err "未知选项: $1"; return 1 ;;
+    esac
+  done
+  op_start_instance "$name" "$image" "$port_base" || return 1
+  if (( enable_fail2ban )); then
+    op_enable_fail2ban "$name" force || return 1
+  fi
+}
+
+cli_forward_add() {
+  local cname="$1" host_port="$2" container_port="$3" bind_addr="${4:-127.0.0.1}"
+  if [[ -z "$cname" || -z "$host_port" || -z "$container_port" ]]; then
+    err "forward add 需要 <名称> <宿主端口> <容器端口> [绑定地址]"
+    return 1
+  fi
+  if ! valid_port "$host_port" || ! valid_port "$container_port"; then
+    err "端口号无效"
+    return 1
+  fi
+  if port_in_use_host "$host_port"; then
+    err "宿主机端口 ${host_port} 已被占用或被标记为保留"
+    return 1
+  fi
+  running_container "$cname" || { err "容器未运行：$cname"; return 1; }
+  ensure_network
+  docker network connect "${NET_NAME}" "$cname" >/dev/null 2>&1 || true
+  local meta="$(pf_meta_file "$cname")"
+  mkdir -p "$META_DIR"
+  if [[ -f "$meta" ]] && awk -F':' -v b="$bind_addr" -v hp="$host_port" -v cp="$container_port" 'BEGIN{found=0} $1==b && $2==hp && $3==cp {found=1} END{exit !found}' "$meta"; then
+    info "端口映射已存在：${bind_addr}:${host_port} → ${cname}:${container_port}"
+    return 0
+  fi
+  printf '%s:%s:%s\n' "$bind_addr" "$host_port" "$container_port" >>"$meta"
+  if sync_forward_proxy "$cname"; then
+    log "已添加端口映射：${bind_addr}:${host_port} → ${cname}:${container_port}"
+    return 0
+  fi
+  warn "代理容器创建失败，回滚此次映射"
+  if [[ -f "$meta" ]]; then
+    awk -F':' -v b="$bind_addr" -v hp="$host_port" -v cp="$container_port" '$1!=b || $2!=hp || $3!=cp' "$meta" >"${meta}.tmp" && mv "${meta}.tmp" "$meta"
+  fi
+  return 1
+}
+
+cli_forward_remove() {
+  local cname="$1" host_port="$2" container_port="$3" bind_addr="${4:-127.0.0.1}"
+  if [[ -z "$cname" || -z "$host_port" || -z "$container_port" ]]; then
+    err "forward remove 需要 <名称> <宿主端口> <容器端口> [绑定地址]"
+    return 1
+  fi
+  local meta="$(pf_meta_file "$cname")"
+  if [[ ! -f "$meta" ]]; then
+    warn "未找到端口映射记录"
+    return 0
+  fi
+  local removed=0 tmp="${meta}.tmp"
+  if awk -F':' -v b="$bind_addr" -v hp="$host_port" -v cp="$container_port" 'BEGIN{changed=0} { if ($1==b && $2==hp && $3==cp) {changed=1; next} print } END{exit !changed}' "$meta" >"$tmp"; then
+    mv "$tmp" "$meta"
+    removed=1
+  else
+    rm -f "$tmp"
+  fi
+  if (( removed == 0 )); then
+    warn "未匹配到指定的端口映射"
+    return 1
+  fi
+  [[ -s "$meta" ]] || rm -f "$meta"
+  if sync_forward_proxy "$cname"; then
+    log "已删除端口映射：${bind_addr}:${host_port}"
+    return 0
+  fi
+  warn "更新代理容器失败"
+  return 1
+}
+
+run_cli() {
+  local cmd="$1"
+  shift || true
+  if [[ -z "${cmd:-}" ]]; then
+    cli_usage
+    return 1
+  fi
+  if need_sudo; then
+    die_need_sudo
+  fi
+  case "$cmd" in
+    help|-h|--help)
+      cli_usage
+      ;;
+    image)
+      case "${1:-}" in
+        build)
+          shift || true
+          op_build_image "${1:-$IMAGE_DEFAULT}" ;;
+        rebuild)
+          shift || true
+          op_rebuild_image "${1:-$IMAGE_DEFAULT}" ;;
+        *)
+          err "未知 image 子命令"
+          cli_usage
+          return 1 ;;
+      esac
+      ;;
+    instance)
+      case "${1:-}" in
+        start)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          cli_instance_start "$name" "$@" ;;
+        stop)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          op_stop_only "$name" ;;
+        remove)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          op_remove_container "$name" ;;
+        status)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          status_of "$name" ;;
+        password)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          op_rotate_password "$name" ;;
+        *)
+          err "未知 instance 子命令"
+          cli_usage
+          return 1 ;;
+      esac
+      ;;
+    fail2ban)
+      case "${1:-}" in
+        enable)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          op_enable_fail2ban "$name" force ;;
+        disable)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          op_disable_fail2ban "$name" ;;
+        status)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          fail2ban_status_report "$name" ;;
+        *)
+          err "未知 fail2ban 子命令"
+          cli_usage
+          return 1 ;;
+      esac
+      ;;
+    forward)
+      case "${1:-}" in
+        add)
+          shift || true
+          cli_forward_add "$1" "$2" "$3" "${4:-127.0.0.1}" ;;
+        remove)
+          shift || true
+          cli_forward_remove "$1" "$2" "$3" "${4:-127.0.0.1}" ;;
+        list)
+          shift || true
+          local name; name="$(cli_require_name "${1:-}")" || return 1
+          shift || true
+          pf_list_for_instance "$name" ;;
+        *)
+          err "未知 forward 子命令"
+          cli_usage
+          return 1 ;;
+      esac
+      ;;
+    status)
+      list_all_status ;;
+    *)
+      err "未知命令: $cmd"
+      cli_usage
+      return 1 ;;
+  esac
+  return 0
+}
 
 # ========== 容器操作 ==========
 wait_sshd_ready() {
@@ -1118,6 +1644,14 @@ main_menu() {
   esac
 }
 
+if [[ "${1:-}" == "cli" ]]; then
+  shift
+  DEVBOX_ASSUME_YES=1
+  export DEVBOX_ASSUME_YES
+  run_cli "$@"
+  exit $?
+fi
+
 while true; do main_menu; done
 EOF_DEVBOX
 
@@ -1194,6 +1728,148 @@ start_first_instance() {
   [[ -f "$META_DIR/${cname}.pass" ]] && ui_caption "密码文件：$META_DIR/${cname}.pass"
 }
 
+run_self_tests() {
+  ui_title "DevBox 自检" "验证关键函数与兼容性检查。"
+
+  local total=0 failures=0
+  set +e
+
+  local saved_err_trap
+  saved_err_trap="$(trap -p ERR || true)"
+  trap - ERR
+
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  cleanup_tmp() { [[ -d "$tmpdir" ]] && rm -rf "$tmpdir"; }
+  local path_backup="$PATH"
+  mkdir -p "$tmpdir/bin"
+  PATH="$tmpdir/bin:$PATH"
+
+  cat >"$tmpdir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  info) exit 0 ;;
+  ps) exit 1 ;;
+  ps*) exit 1 ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$tmpdir/bin/docker"
+
+  cat >"$tmpdir/bin/ss" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$tmpdir/bin/ss"
+
+  cat >"$tmpdir/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+/usr/bin/timeout "$@"
+EOF
+  chmod +x "$tmpdir/bin/timeout"
+
+  expect_success() {
+    local desc="$1"
+    shift
+    ((total++))
+    "$@"
+    local status=$?
+    if [[ $status -eq 0 ]]; then
+      printf '  [PASS] %s\n' "$desc"
+    else
+      printf '  [FAIL] %s (退出码 %s)\n' "$desc" "$status"
+      ((failures++))
+    fi
+    return 0
+  }
+
+  expect_failure() {
+    local desc="$1"
+    shift
+    ((total++))
+    "$@"
+    local status=$?
+    if [[ $status -ne 0 ]]; then
+      printf '  [PASS] %s\n' "$desc"
+    else
+      printf '  [FAIL] %s (意外成功)\n' "$desc"
+      ((failures++))
+    fi
+    return 0
+  }
+
+  expect_equals() {
+    local desc="$1" expected="$2" actual="$3"
+    ((total++))
+    if [[ "$expected" == "$actual" ]]; then
+      printf '  [PASS] %s\n' "$desc"
+    else
+      printf '  [FAIL] %s (期望 %s 实际 %s)\n' "$desc" "$expected" "$actual"
+      ((failures++))
+    fi
+  }
+
+  expect_success "validate_port 接受合法端口" validate_port 22
+  expect_failure "validate_port 拒绝非法端口" validate_port 70000
+  expect_success "validate_container_name 通过合法名称" validate_container_name devbox-01
+  expect_failure "validate_container_name 拒绝非法名称" validate_container_name /bad/name
+
+  expect_equals "strip_control_chars 移除控制字符" "abc" "$(strip_control_chars $'a\003b\nc')"
+
+  DEVBOX_RESERVED_HOST_PORTS="40000"
+  expect_success "port_in_use_host 对保留端口返回占用" port_in_use_host 40000
+  local picked
+  picked="$(pick_port_strict 40000 2)"
+  expect_equals "pick_port_strict 跳过保留端口" "40100" "$picked"
+  unset DEVBOX_RESERVED_HOST_PORTS
+
+  local work_backup="${WORKDIR:-}" meta_backup="${META_DIR:-}" debug_backup="${DEBUG_LOG:-}" tmp_work
+  tmp_work="${tmpdir}/work"
+  mkdir -p "$tmp_work"
+  WORKDIR="$tmp_work"
+  META_DIR="$tmp_work/.devbox"
+  DEBUG_LOG=""
+
+  expect_success "write_min_dockerfile 生成文件" write_min_dockerfile
+  expect_equals "生成 Dockerfile 存在" "1" "$( [[ -f "$WORKDIR/Dockerfile" ]] && echo 1 || echo 0 )"
+  echo "FROM scratch" >"$WORKDIR/Dockerfile"
+  expect_success "write_min_dockerfile 不覆盖已有文件" write_min_dockerfile
+  expect_equals "现有 Dockerfile 保持不变" "FROM scratch" "$(head -n1 "$WORKDIR/Dockerfile")"
+
+  mkdir -p "$tmp_work/custom"
+  WORKDIR="$tmp_work/custom"
+  cat >"$WORKDIR/Dockerfile" <<'EOF'
+FROM debian:bookworm-slim
+RUN useradd -m dev && apt-get update && apt-get install -y openssh-server
+EXPOSE 22
+CMD ["/usr/sbin/sshd","-D"]
+EOF
+  expect_success "check_dockerfile_compatibility 通过标准 Dockerfile" check_dockerfile_compatibility
+
+  WORKDIR="$work_backup"
+  META_DIR="$meta_backup"
+  DEBUG_LOG="$debug_backup"
+
+  PATH="$path_backup"
+  cleanup_tmp
+  unset -f cleanup_tmp
+  if [[ -n "$saved_err_trap" ]]; then
+    eval "$saved_err_trap"
+  else
+    trap - ERR
+  fi
+  set -e
+
+  printf '\n共执行 %d 项检查。\n' "$total"
+  if ((failures>0)); then
+    err "自检失败，共 ${failures} 项未通过"
+    exit 1
+  fi
+
+  log "自检通过"
+  exit 0
+}
+
 # ========== 主流程 ==========
 main() {
   ui_title "DevBox 安装助手" "打造优雅的多实例开发容器环境。"
@@ -1202,6 +1878,7 @@ main() {
   init_prompt
   ui_title "构建与配置" "正在准备基础镜像与管理工具。"
   write_min_dockerfile
+  check_dockerfile_compatibility
   build_image
   ensure_network "$NET_NAME"
   write_devbox_script
@@ -1221,4 +1898,11 @@ main() {
   printf "   • 端口转发：%s\n" "$(color '1;37' '使用菜单中的 Port Mapping 工具按需开放服务。')"
 }
 
-main "$@"
+parse_args "$@"
+
+if (( RUN_SELF_TEST )); then
+  run_self_tests
+  exit 0
+fi
+
+main
