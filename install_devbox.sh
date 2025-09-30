@@ -647,6 +647,30 @@ end_restore_int() {
   unset SAVED_INT_TRAP
 }
 
+follow_stream() {
+  local desc="$1"
+  shift || true
+  local status=0
+  begin_ignore_int
+  set +e
+  if ( trap - INT; "$@" ); then
+    status=0
+  else
+    status=$?
+  fi
+  set -e
+  end_restore_int
+  if (( status == 130 )); then
+    log_debug "follow_stream '$desc' interrupted by user"
+    return 0
+  fi
+  if (( status != 0 )); then
+    warn "$desc 跟随过程中出现问题 (退出码 $status)"
+    pause_for_enter
+  fi
+  return 0
+}
+
 # ========== UI 工具 ==========
 color() { local code="${1:-}"; shift || true; printf "\e[%sm%s\e[0m" "$code" "${*:-}"; }
 log()  { printf "%b  %s\n" "$(color '1;32' 'OK')" "$*"; }
@@ -1528,11 +1552,11 @@ op_logs_instance() {
     printf '%s' "$(color '0;37' '选择操作 → ')"; local choice; IFS= read -r choice
     case "$choice" in
       1)
-        begin_ignore_int; ( trap - INT; docker logs -f --tail 200 "$cname" ); end_restore_int ;;
+        follow_stream "Docker stdout/stderr" docker logs -f --tail 200 "$cname" ;;
       2)
-        begin_ignore_int; ( trap - INT; docker exec -u root "$cname" bash -lc 'touch /var/log/auth.log; tail -n 200 -f /var/log/auth.log' ); end_restore_int ;;
+        follow_stream "SSH auth.log" docker exec -u root "$cname" bash -lc '[[ -f /var/log/auth.log ]] || : > /var/log/auth.log; tail -n 200 -F /var/log/auth.log' ;;
       3)
-        begin_ignore_int; ( trap - INT; docker exec -u root "$cname" bash -lc '[[ -f /var/log/fail2ban.log ]] || : > /var/log/fail2ban.log; tail -n 200 -f /var/log/fail2ban.log' ); end_restore_int ;;
+        follow_stream "Fail2ban 日志" docker exec -u root "$cname" bash -lc '[[ -f /var/log/fail2ban.log ]] || : > /var/log/fail2ban.log; tail -n 200 -F /var/log/fail2ban.log' ;;
       4)
         docker exec -u root "$cname" bash -lc '[[ -f /var/log/auth.log ]] && tail -n 200 /var/log/auth.log || echo "(日志不存在)"'; pause_for_enter ;;
       5)
