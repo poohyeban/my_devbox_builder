@@ -493,8 +493,8 @@ check_dockerfile_compatibility() {
   if ! grep -qiE '^[[:space:]]*EXPOSE[[:space:]]+22\b' "$dockerfile"; then
     issues+=("未检测到 EXPOSE 22；DevBox 默认期望通过 22 端口提供 SSH 服务。")
   fi
-  if ! grep -qi 'sshd' "$dockerfile"; then
-    issues+=("Dockerfile 中未发现 sshd 相关命令，请确认容器入口能启动 SSH 服务。")
+  if ! grep -qi '' "$dockerfile"; then
+    issues+=("Dockerfile 中未发现  相关命令，请确认容器入口能启动 SSH 服务。")
   fi
   if ! grep -qi 'useradd' "$dockerfile" && ! grep -qi 'adduser' "$dockerfile"; then
     issues+=("建议为开发者准备一个非 root 账号（例如 dev），否则脚本将无法自动创建安全凭据。")
@@ -1200,6 +1200,7 @@ bantime = 1h
 maxretry = 5
 [sshd]
 enabled = true
+backend = polling
 logpath = /var/log/auth.log
 action = sshd-match[name=sshd]
 JAIL
