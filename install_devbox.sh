@@ -1025,9 +1025,33 @@ wait_sshd_ready() {
   return 1
 }
 ensure_home_perm() { local cname="$1"; docker exec -u root "${cname}" sh -lc 'chown -R $(id -u dev):$(id -g dev) /home/dev' 2>/dev/null || true; }
+generate_secure_password() {
+  local length="${1:-24}" candidate="" source=""
+  for source in /dev/random /dev/urandom; do
+    [[ -r "$source" ]] || continue
+    for _ in {1..12}; do
+      candidate="$(head -c 512 "$source" 2>/dev/null | LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+=.?~-' | head -c "$length")"
+      (( ${#candidate} < length )) && continue
+      [[ "$candidate" =~ [A-Z] ]] || continue
+      [[ "$candidate" =~ [a-z] ]] || continue
+      [[ "$candidate" =~ [0-9] ]] || continue
+      [[ "$candidate" =~ [\!\@\#\$\%\^\&\*\(\)_\+\=\.\?\~\-] ]] || continue
+      printf '%s' "$candidate"
+      return 0
+    done
+  done
+
+  candidate="DevBox$(date +%s%N)!A#1?"
+  printf '%s' "$candidate" | head -c "$length"
+  return 0
+}
 set_random_password() {
   local cname="$1" pfile; pfile="$(passfile_of "$cname")"
-  local newpass; newpass="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12 || echo "Dev$(date +%s)")"
+  local newpass; newpass="$(generate_secure_password 24)"
+  if [[ -z "$newpass" ]]; then
+    warn "生成随机密码失败"
+    return 1
+  fi
   if docker exec -u root "${cname}" bash -lc "echo 'dev:${newpass}' | chpasswd" 2>/dev/null; then
     echo "${newpass}" > "${pfile}"
     log "已为 dev 生成新密码：${newpass}"
@@ -1507,7 +1531,6 @@ op_start_instance() {
     --network "${NET_NAME}" \
     --restart unless-stopped \
     --memory "${DEFAULT_MEM}" --cpus "${DEFAULT_CPUS}" --pids-limit "${DEFAULT_PIDS}" \
-    --security-opt no-new-privileges \
     -l devbox.managed=true -l devbox.name="$cname" -l devbox.image="$image" \
     -l devbox.created="$(date -u +%FT%TZ)" -l devbox.port="$port" \
     -p "${port}:22" "$image" /usr/sbin/sshd -D >/dev/null
@@ -1611,7 +1634,7 @@ instance_menu() {
     menu_option 4 "Shell 进入容器" "打开 zsh 交互会话"
     menu_option 5 "Logs 查看日志" "实时跟踪 200 行"
     menu_option 6 "Rebuild 强制重建镜像" "忽略缓存"
-    menu_option 7 "Rotate 旋转随机密码"
+    menu_option 7 "Regenerate 再次生成随机密码"
     menu_option 8 "Remove 删除容器" "不影响镜像"
     menu_option 9 "Security 安全配置" "Fail2ban：$(fail2ban_menu_hint "$cname")"
     menu_option 10 "Add Port Mapping" "新增代理容器进行端口转发"
@@ -1708,7 +1731,11 @@ wait_sshd_ready_installer() {
 set_random_password_installer() {
   local cname="$1"
   local pfile="$META_DIR/${cname}.pass"
-  local newpass; newpass="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12 || echo "Dev$(date +%s)")"
+  local newpass; newpass="$(generate_secure_password 24)"
+  if [[ -z "$newpass" ]]; then
+    warn "生成随机密码失败"
+    return 1
+  fi
   if docker exec -u root "$cname" bash -lc "command -v chpasswd >/dev/null && echo 'dev:${newpass}' | chpasswd"; then
     echo "$newpass" > "$pfile"
     log "容器 dev 用户密码已更新：${newpass}"
@@ -1729,7 +1756,6 @@ start_first_instance() {
     --network "$net" \
     --restart unless-stopped \
     --memory "${DEFAULT_MEM:-1g}" --cpus "${DEFAULT_CPUS:-1.0}" --pids-limit "${DEFAULT_PIDS:-256}" \
-    --security-opt no-new-privileges \
     -l devbox.managed=true -l devbox.name="$cname" -l devbox.image="$image" \
     -l devbox.created="$(date -u +%FT%TZ)" -l devbox.port="$port" \
     -p "${port}:22" "$image" /usr/sbin/sshd -D >/dev/null
