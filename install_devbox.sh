@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # ========== 全局配置 ==========
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 DEBUG="${DEVBOX_DEBUG:-0}"
 DEBUG_LOG=""
 AUTO_MODE="${DEVBOX_AUTO:-0}"
@@ -37,10 +37,6 @@ log_debug() {
 cleanup_on_interrupt() {
   echo
   err "用户中断操作 (Ctrl+C)"
-  # 清理临时文件
-  if [[ -n "${TMP_FILES:-}" ]]; then
-    rm -f -- "$TMP_FILES" 2>/dev/null || true
-  fi
   exit 130
 }
 trap cleanup_on_interrupt INT
@@ -72,7 +68,7 @@ progress_done() { printf '\r%b  %s\n' "$(color '1;32' '✓')" "$1"; }
 
 print_usage() {
   cat <<'USAGE'
-DevBox 安装助手 v2.0.0
+DevBox 安装助手 v2.1.0
 
 用法:
   ./install_devbox.sh [选项]
@@ -85,16 +81,16 @@ DevBox 安装助手 v2.0.0
   --self-test       运行内建自检并退出
 
 主要环境变量:
-  DEVBOX_WORKDIR          工作目录（默认 /opt/my_dev_box）
-  DEVBOX_IMAGE_NAME       镜像名称（默认 acm-lite）
-  DEVBOX_IMAGE_TAG        镜像标签（默认 latest）
-  DEVBOX_NET_NAME         Docker 网络名称（默认 devbox-net）
-  DEVBOX_PORT_BASE        SSH 起始端口（默认 30022）
-  DEVBOX_CNAME_PREFIX     实例名前缀（默认镜像名）
-  DEVBOX_AUTO_START       y 或 n，决定是否自动创建首个实例（默认 n）
+  DEVBOX_WORKDIR        工作目录（默认 /opt/my_dev_box）
+  DEVBOX_IMAGE_NAME     镜像名称（默认 acm-lite）
+  DEVBOX_IMAGE_TAG      镜像标签（默认 latest）
+  DEVBOX_NET_NAME       Docker 网络名称（默认 devbox-net）
+  DEVBOX_PORT_BASE      SSH 起始端口（默认 30022）
+  DEVBOX_CNAME_PREFIX   实例名前缀（默认镜像名）
+  DEVBOX_AUTO_START     y 或 n，决定是否自动创建首个实例（默认 n）
   DEVBOX_MEM/CPUS/PIDS    资源限制（默认 1g / 1.0 / 256）
-  DEVBOX_AUTO             设为 1 等同于 --auto
-  DEVBOX_ASSUME_YES       自动对确认问题回答 "是"，适合 CI / 自动化环境
+  DEVBOX_AUTO           设为 1 等同于 --auto
+  DEVBOX_ASSUME_YES     自动对确认问题回答 "是"，适合 CI / 自动化环境
 
 示例:
   ./install_devbox.sh
@@ -164,17 +160,17 @@ ask() {
   echo >&2
   printf '%s %s\n' "$(color '1;36' '提示')" "$(color '1;37' "$prompt")" >&2
   if [[ -n "$note" ]]; then
-    printf '   %s\n' "$(color '0;37' "$note")" >&2
+    printf '    %s\n' "$(color '0;37' "$note")" >&2
   fi
   if [[ -n "$def" ]]; then
-    printf '   %s %s\n' "$(color '0;37' '默认值')" "$(color '1;37' "$def")" >&2
-    printf '   %s → ' "$(color '0;37' '输入值 (回车采用默认)')" >&2
+    printf '    %s %s\n' "$(color '0;37' '默认值')" "$(color '1;37' "$def")" >&2
+    printf '    %s → ' "$(color '0;37' '输入值 (回车采用默认)')" >&2
     IFS= read -r ans
     cleaned="$(strip_control_chars "$ans")"
     def_clean="$(strip_control_chars "$def")"
     printf '%s\n' "${cleaned:-$def_clean}"
   else
-    printf '   %s → ' "$(color '0;37' '输入值')" >&2
+    printf '    %s → ' "$(color '0;37' '输入值')" >&2
     IFS= read -r ans
     cleaned="$(strip_control_chars "$ans")"
     printf '%s\n' "$cleaned"
@@ -218,7 +214,7 @@ diagnose_docker_runtime() {
       iptables_err="$(iptables -L 2>&1 || true)"
       iptables_err="${iptables_err%%$'\n'*}"
       iptables_err="$(strip_control_chars "$iptables_err")"
-      hints+=("执行 iptables 失败：${iptables_err:-需要 CAP_NET_ADMIN 权限}。请在具备 NET_ADMIN 能力的环境运行。")
+      hints+=("执行 iptables 失败：\"${iptables_err:-需要 CAP_NET_ADMIN 权限}\"。请在具备 NET_ADMIN 能力的环境运行。")
     fi
   else
     hints+=("未安装 iptables，Docker 默认网络功能无法使用。请先安装 iptables 包。")
@@ -350,13 +346,13 @@ init_prompt_auto() {
 
   echo
   ui_caption "配置预览："
-  printf "   • 工作目录：%s\n" "$(color '1;37' "$WORKDIR")"
-  printf "   • 镜像：%s\n" "$(color '1;37' "$IMAGE")"
-  printf "   • 网络：%s\n" "$(color '1;37' "$NET_NAME")"
-  printf "   • SSH 端口：%s\n" "$(color '1;37' "$PORT_BASE_DEFAULT")"
-  printf "   • 实例前缀：%s\n" "$(color '1;37' "$CNAME_PREFIX")"
-  printf "   • 自动启动：%s\n" "$(color '1;37' "${AUTO_START^^}")"
-  printf "   • 资源限制：%s, %s, pids=%s\n" "$(color '1;37' "$DEFAULT_MEM")" "$(color '1;37' "$DEFAULT_CPUS")" "$(color '1;37' "$DEFAULT_PIDS")"
+  printf "    • 工作目录：%s\n" "$(color '1;37' "$WORKDIR")"
+  printf "    • 镜像：%s\n" "$(color '1;37' "$IMAGE")"
+  printf "    • 网络：%s\n" "$(color '1;37' "$NET_NAME")"
+  printf "    • SSH 端口：%s\n" "$(color '1;37' "$PORT_BASE_DEFAULT")"
+  printf "    • 实例前缀：%s\n" "$(color '1;37' "$CNAME_PREFIX")"
+  printf "    • 自动启动：%s\n" "$(color '1;37' "${AUTO_START^^}")"
+  printf "    • 资源限制：%s, %s, pids=%s\n" "$(color '1;37' "$DEFAULT_MEM")" "$(color '1;37' "$DEFAULT_CPUS")" "$(color '1;37' "$DEFAULT_PIDS")"
 
   mkdir -p -- "$WORKDIR" "$WORKDIR/.devbox"
   if [[ ! -w "$WORKDIR" ]]; then
@@ -406,13 +402,13 @@ init_prompt_interactive() {
 
   echo
   ui_caption "配置预览："
-  printf "   • 工作目录：%s\n" "$(color '1;37' "$WORKDIR")"
-  printf "   • 镜像：%s\n" "$(color '1;37' "$IMAGE")"
-  printf "   • 网络：%s\n" "$(color '1;37' "$NET_NAME")"
-  printf "   • SSH 端口：%s\n" "$(color '1;37' "$PORT_BASE_DEFAULT")"
-  printf "   • 实例前缀：%s\n" "$(color '1;37' "$CNAME_PREFIX")"
-  printf "   • 自动启动：%s\n" "$(color '1;37' "$AUTO_START")"
-  printf "   • 资源限制：%s, %s, pids=%s\n" "$(color '1;37' "$DEFAULT_MEM")" "$(color '1;37' "$DEFAULT_CPUS")" "$(color '1;37' "$DEFAULT_PIDS")"
+  printf "    • 工作目录：%s\n" "$(color '1;37' "$WORKDIR")"
+  printf "    • 镜像：%s\n" "$(color '1;37' "$IMAGE")"
+  printf "    • 网络：%s\n" "$(color '1;37' "$NET_NAME")"
+  printf "    • SSH 端口：%s\n" "$(color '1;37' "$PORT_BASE_DEFAULT")"
+  printf "    • 实例前缀：%s\n" "$(color '1;37' "$CNAME_PREFIX")"
+  printf "    • 自动启动：%s\n" "$(color '1;37' "$AUTO_START")"
+  printf "    • 资源限制：%s, %s, pids=%s\n" "$(color '1;37' "$DEFAULT_MEM")" "$(color '1;37' "$DEFAULT_CPUS")" "$(color '1;37' "$DEFAULT_PIDS")"
 
   if [[ ! -d "$WORKDIR" ]]; then
     mkdir -p -- "$WORKDIR"
@@ -452,7 +448,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # 仅安装必要组件：最小攻击面
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      openssh-server zsh \
+      openssh-server zsh bash \
       zsh-autosuggestions zsh-syntax-highlighting \
       ca-certificates locales sudo \
     && rm -rf /var/lib/apt/lists/*
@@ -480,9 +476,39 @@ zstyle ":completion:*" menu select\n\
 # 但登录与日常操作使用非 root 用户 dev，且禁用 root 登录。
 USER root
 WORKDIR /home/dev
+
+# 复制由 install_devbox.sh 生成的入口点脚本
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# 设置入口点
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 EXPOSE 22
-CMD ["/usr/sbin/sshd","-D"]
+# CMD 将作为参数传递给 ENTRYPOINT
+CMD ["/usr/sbin/sshd","-D","-e"]
 DOCKERFILE
+}
+
+write_entrypoint_script() {
+  log "生成入口点脚本：$WORKDIR/entrypoint.sh"
+  log_debug "Writing entrypoint.sh for container log forwarding"
+  cat >"$WORKDIR/entrypoint.sh" <<'ENTRYPOINT_DEVBOX'
+#!/bin/bash
+
+LOG_DIR="/var/log/container_logs"
+LOG_FILE="${LOG_DIR}/sshd.log"
+
+mkdir -p "${LOG_DIR}"
+touch "${LOG_FILE}"
+chown root:root "${LOG_FILE}"
+chmod 640 "${LOG_FILE}"
+
+echo "Container SSH logs are being forwarded to ${LOG_FILE}"
+echo "This file is mapped to the host at: WORKDIR/<container_name>/logs/sshd.log"
+
+exec "$@" 2> >(tee -a "${LOG_FILE}" >&2)
+ENTRYPOINT_DEVBOX
 }
 
 check_dockerfile_compatibility() {
@@ -493,8 +519,8 @@ check_dockerfile_compatibility() {
   if ! grep -qiE '^[[:space:]]*EXPOSE[[:space:]]+22\b' "$dockerfile"; then
     issues+=("未检测到 EXPOSE 22；DevBox 默认期望通过 22 端口提供 SSH 服务。")
   fi
-  if ! grep -qi '' "$dockerfile"; then
-    issues+=("Dockerfile 中未发现  相关命令，请确认容器入口能启动 SSH 服务。")
+  if ! grep -qi 'sshd' "$dockerfile"; then
+    issues+=("Dockerfile 中未发现 sshd 相关命令，请确认容器入口能启动 SSH 服务。")
   fi
   if ! grep -qi 'useradd' "$dockerfile" && ! grep -qi 'adduser' "$dockerfile"; then
     issues+=("建议为开发者准备一个非 root 账号（例如 dev），否则脚本将无法自动创建安全凭据。")
@@ -558,7 +584,7 @@ write_devbox_script() {
 set -Eeuo pipefail
 
 # ========== 配置 ==========
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 IMAGE_DEFAULT="__IMAGE__"
 PORT_BASE_DEFAULT="__PORTBASE__"
 MAX_TRIES="__MAXTRIES__"
@@ -578,11 +604,11 @@ mkdir -p "${META_DIR}"
 # ========== 帮助信息 ==========
 show_help() {
   cat <<'HELP'
-DevBox 管理工具 v2.0.0
+DevBox 管理工具 v2.1.0
 
 用法:
   ./devbox.sh [选项]
-  ./devbox.sh cli <命令> [参数]    # 非交互式子命令，适合自动化
+  ./devbox.sh cli <命令> [参数]     # 非交互式子命令，适合自动化
 
 选项:
   -h, --help      显示此帮助信息
@@ -592,7 +618,6 @@ DevBox 管理工具 v2.0.0
   • 创建和管理多个独立的开发容器实例
   • 自动端口分配和 SSH 访问
   • 端口转发代理（通过轻量 socat 容器）
-  • Fail2ban 安全保护（启用/查看/重置/卸载）
   • 密码管理和旋转
   • DEVBOX_RESERVED_HOST_PORTS 用于声明不可占用的宿主机端口
   • DEVBOX_ASSUME_YES=1 可在自动化脚本中跳过确认提示
@@ -606,7 +631,7 @@ DevBox 管理工具 v2.0.0
   ./devbox.sh
   DEVBOX_DEBUG=1 ./devbox.sh
   DEVBOX_MEM=2g DEVBOX_CPUS=2 ./devbox.sh
-  ./devbox.sh cli instance start demo --enable-fail2ban
+  ./devbox.sh cli instance start demo
 
 HELP
   exit 0
@@ -696,9 +721,9 @@ ui_block_title() { printf '\n%s %s\n' "$(color '1;37' '❯')" "$(color '1;37' "$
 ui_kv() { local key="$1" val="${2:-}"; printf '  %-14s: %s\n' "$(color '0;37' "$key")" "$(color '1;37' "$val")"; }
 menu_option() {
   local key="$1" title="$2" hint="${3:-}"
-  printf '   %s %s\n' "$(color '1;36' "[$key]")" "$(color '1;37' "$title")"
+  printf '    %s %s\n' "$(color '1;36' "[$key]")" "$(color '1;37' "$title")"
   if [[ -n "$hint" ]]; then
-    printf '      %s\n' "$(color '0;37' "$hint")"
+    printf '       %s\n' "$(color '0;37' "$hint")"
   fi
 }
 pause_for_enter() { echo; printf '%s' "$(color '0;37' '按回车继续')"; read -r _; }
@@ -707,14 +732,14 @@ ask_field() {
   echo >&2
   printf '%s %s\n' "$(color '1;36' '提示')" "$(color '1;37' "$prompt")" >&2
   if [[ -n "$note" ]]; then
-    printf '   %s\n' "$(color '0;37' "$note")" >&2
+    printf '    %s\n' "$(color '0;37' "$note")" >&2
   fi
   if [[ -n "$def" ]]; then
-    printf '   %s %s\n' "$(color '0;37' '默认值')" "$(color '1;37' "$def")" >&2
-    printf '   %s → ' "$(color '0;37' '输入值 (回车采用默认)')" >&2
+    printf '    %s %s\n' "$(color '0;37' '默认值')" "$(color '1;37' "$def")" >&2
+    printf '    %s → ' "$(color '0;37' '输入值 (回车采用默认)')" >&2
     IFS= read -r ans; echo "${ans:-$def}"
   else
-    printf '   %s → ' "$(color '0;37' '输入值')" >&2
+    printf '    %s → ' "$(color '0;37' '输入值')" >&2
     IFS= read -r ans; echo "$ans"
   fi
 }
@@ -780,21 +805,18 @@ cli_usage() {
 用法: ./devbox.sh cli <命令> [参数]
 
 命令:
-  image build [镜像]          构建镜像（默认使用安装时的镜像名）
-  image rebuild [镜像]        强制忽略缓存重建镜像
-  instance start <名称> [--image 镜像] [--port-base 起始端口] [--enable-fail2ban]
-  instance stop <名称>        停止容器
-  instance remove <名称>      删除容器及其记录
-  instance status <名称>      输出实例状态摘要
-  instance password <名称>    重新生成 dev 用户密码
-  fail2ban enable <名称>      安装并启动 fail2ban
-  fail2ban disable <名称>     卸载 fail2ban
-  fail2ban status <名称>      显示 fail2ban 状态和日志摘要
+  image build [镜像]            构建镜像（默认使用安装时的镜像名）
+  image rebuild [镜像]          强制忽略缓存重建镜像
+  instance start <名称> [--image 镜像] [--port-base 起始端口]
+  instance stop <名称>          停止容器
+  instance remove <名称>        删除容器及其记录
+  instance status <名称>        输出实例状态摘要
+  instance password <名称>      重新生成 dev 用户密码
   forward add <名称> <宿主端口> <容器端口> [绑定地址]
   forward remove <名称> <宿主端口> <容器端口> [绑定地址]
-  forward list <名称>         列出端口转发映射
-  status                      列出所有已知实例状态
-  help                        显示本帮助
+  forward list <名称>           列出端口转发映射
+  status                        列出所有已知实例状态
+  help                          显示本帮助
 
 所有 CLI 子命令默认启用 DEVBOX_ASSUME_YES=1，以方便自动化脚本使用。
 CLI
@@ -811,23 +833,18 @@ cli_require_name() {
 
 cli_instance_start() {
   local name="$1"; shift || true
-  local image="$IMAGE_DEFAULT" port_base="$PORT_BASE_DEFAULT" enable_fail2ban=0
+  local image="$IMAGE_DEFAULT" port_base="$PORT_BASE_DEFAULT"
   while (($#)); do
     case "$1" in
       --image)
         image="$2"; shift 2 || return 1 ;;
       --port-base)
         port_base="$2"; shift 2 || return 1 ;;
-      --enable-fail2ban)
-        enable_fail2ban=1; shift ;;
       *)
         err "未知选项: $1"; return 1 ;;
     esac
   done
   op_start_instance "$name" "$image" "$port_base" || return 1
-  if (( enable_fail2ban )); then
-    op_enable_fail2ban "$name" force || return 1
-  fi
 }
 
 cli_forward_add() {
@@ -876,7 +893,11 @@ cli_forward_remove() {
     warn "未找到端口映射记录"
     return 0
   fi
-  local removed=0 tmp="${meta}.tmp"
+  local removed=0 tmp
+  if ! tmp="$(mktemp "${meta}.XXXXXX")"; then
+    err "创建端口映射临时文件失败"
+    return 1
+  fi
   if awk -F':' -v b="$bind_addr" -v hp="$host_port" -v cp="$container_port" 'BEGIN{changed=0} { if ($1==b && $2==hp && $3==cp) {changed=1; next} print } END{exit !changed}' "$meta" >"$tmp"; then
     mv "$tmp" "$meta"
     removed=1
@@ -957,29 +978,6 @@ run_cli() {
           return 1 ;;
       esac
       ;;
-    fail2ban)
-      case "${1:-}" in
-        enable)
-          shift || true
-          local name; name="$(cli_require_name "${1:-}")" || return 1
-          shift || true
-          op_enable_fail2ban "$name" force ;;
-        disable)
-          shift || true
-          local name; name="$(cli_require_name "${1:-}")" || return 1
-          shift || true
-          op_disable_fail2ban "$name" ;;
-        status)
-          shift || true
-          local name; name="$(cli_require_name "${1:-}")" || return 1
-          shift || true
-          fail2ban_status_report "$name" ;;
-        *)
-          err "未知 fail2ban 子命令"
-          cli_usage
-          return 1 ;;
-      esac
-      ;;
     forward)
       case "${1:-}" in
         add)
@@ -1054,6 +1052,7 @@ set_random_password() {
   fi
   if docker exec -u root "${cname}" bash -lc "echo 'dev:${newpass}' | chpasswd" 2>/dev/null; then
     echo "${newpass}" > "${pfile}"
+    chmod 600 "${pfile}" || warn "无法设置密码文件权限：${pfile}"
     log "已为 dev 生成新密码：${newpass}"
     ui_caption "密码保存在 $(basename "$pfile")"
   else
@@ -1076,306 +1075,6 @@ status_of() {
   ui_kv "内部 IP" "${ip:--}"
 }
 ssh_hint() { local cname="$1" port; port="$(docker inspect -f '{{range .NetworkSettings.Ports}}{{(index . 0).HostPort}}{{end}}' "$cname" 2>/dev/null || true)"; echo; ui_caption "SSH 连接: ssh dev@<服务器IP> -p ${port}"; }
-
-# ========== Fail2ban 管理 ==========
-fail2ban_meta_file() { echo "${META_DIR}/$1.fail2ban"; }
-fail2ban_requested() { [[ -f "$(fail2ban_meta_file "$1")" ]]; }
-fail2ban_menu_hint() {
-  local cname="$1"
-  if fail2ban_requested "$cname"; then echo '已启用'
-  elif running_container "$cname" && docker exec -u root "$cname" bash -lc 'command -v fail2ban-client' >/dev/null 2>&1; then echo '需修复'
-  else echo '未启用'; fi
-}
-
-fail2ban_apply() {
-  local cname="$1" mode="${2:-keep}"
-  log_debug "Applying fail2ban config for $cname (mode=$mode)"
-  docker exec -u root -i "$cname" bash -s "$mode" <<'SCRIPT' || return 1
-set -Eeuo pipefail
-MODE="${1:-keep}"
-export DEBIAN_FRONTEND=noninteractive
-log_step() { printf '[fail2ban] %s\n' "$*"; }
-log_warn() { printf '[fail2ban][WARN] %s\n' "$*" >&2; }
-
-apt_updated=false
-ensure_pkg() {
-  local pkg="$1" mode="${2:-check}" status reinstall_flag=()
-  status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
-  if [[ "$status" == "install ok installed" && "$mode" != "force" ]]; then
-    log_step "软件包已存在: $pkg"
-    return 0
-  fi
-  if [[ "$apt_updated" == false ]]; then
-    log_step "apt-get update..."
-    apt-get update || exit 20
-    apt_updated=true
-  fi
-  if [[ "$mode" == "force" ]]; then
-    reinstall_flag+=(--reinstall)
-    log_step "重新安装: $pkg"
-  else
-    log_step "安装: $pkg"
-  fi
-  apt-get install -y --no-install-recommends "${reinstall_flag[@]}" "$pkg" || exit 21
-}
-
-log_step "安装依赖..."
-ensure_pkg fail2ban
-ensure_pkg rsyslog
-ensure_pkg nano
-
-if ! command -v fail2ban-client >/dev/null 2>&1; then
-  log_warn "fail2ban-client 未找到，尝试重新安装 fail2ban"
-  ensure_pkg fail2ban force
-  command -v fail2ban-client >/dev/null 2>&1 || { log_warn "重新安装后仍未找到 fail2ban-client"; exit 22; }
-fi
-
-log_step "准备配置..."
-mkdir -p /run /var/run /var/log /var/run/fail2ban /etc/fail2ban/action.d /etc/ssh/sshd_config.d
-touch /var/log/auth.log
-
-block="/etc/ssh/sshd_config.d/99-fail2ban-blocklist.conf"
-[[ "$MODE" == "force" || ! -f "$block" ]] && { log_step "创建 SSH blocklist"; : >"$block"; }
-chmod 600 "$block"
-
-grep -Eq "^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*.conf" /etc/ssh/sshd_config || printf '\nInclude /etc/ssh/sshd_config.d/*.conf\n' >>/etc/ssh/sshd_config
-grep -Eq '^[[:space:]]*SyslogFacility[[:space:]]+AUTHPRIV' /etc/ssh/sshd_config || printf 'SyslogFacility AUTHPRIV\n' >>/etc/ssh/sshd_config
-grep -Eq '^[[:space:]]*LogLevel[[:space:]]+INFO' /etc/ssh/sshd_config || printf 'LogLevel INFO\n' >>/etc/ssh/sshd_config
-
-helper="/usr/local/bin/fail2ban-sshd-match"
-if [[ "$MODE" == "force" || ! -f "$helper" ]]; then
-  log_step "创建 helper 脚本"
-  cat <<'HELPER' >"$helper"
-#!/usr/bin/env bash
-set -Eeuo pipefail
-mode="${1:-}"; name="${2:-}"; ip="${3:-}"
-file="/etc/ssh/sshd_config.d/99-fail2ban-blocklist.conf"
-tmp="$(mktemp)"; cleanup(){ [[ -n "$tmp" && -e "$tmp" ]] && rm -f "$tmp"; }; trap cleanup EXIT
-mkdir -p "$(dirname "$file")"; touch "$file"; chmod 600 "$file"
-case "$mode" in
-  ban)
-    grep -Fq "# BEGIN FAIL2BAN ${name} ${ip}" "$file" && { tmp=""; } || {
-      { cat "$file"; printf '# BEGIN FAIL2BAN %s %s\nMatch Address %s\n  PasswordAuthentication no\n  PubkeyAuthentication no\n# END FAIL2BAN %s %s\n' "$name" "$ip" "$ip" "$name" "$ip"; } >"$tmp"
-      mv "$tmp" "$file"; tmp=""
-    }
-    ;;
-  unban)
-    [[ -s "$file" ]] && { awk -v name="$name" -v ip="$ip" 'BEGIN{skip=0} $0=="# BEGIN FAIL2BAN "name" "ip{skip=1;next} $0=="# END FAIL2BAN "name" "ip{skip=0;next} skip==0{print}' "$file" >"$tmp"; mv "$tmp" "$file"; tmp=""; }
-    ;;
-  *) echo "Usage: fail2ban-sshd-match {ban|unban} <name> <ip>" >&2; exit 2 ;;
-esac
-chmod 600 "$file"; pkill -HUP -x sshd 2>/dev/null || true
-HELPER
-  chmod 0755 "$helper"
-fi
-
-action="/etc/fail2ban/action.d/sshd-match.conf"
-if [[ "$MODE" == "force" || ! -f "$action" ]]; then
-  cat <<'ACTION' >"$action"
-[Definition]
-actionstart =
-actionstop =
-actioncheck =
-actionban = /usr/local/bin/fail2ban-sshd-match ban <name> <ip>
-actionunban = /usr/local/bin/fail2ban-sshd-match unban <name> <ip>
-ACTION
-  chmod 0644 "$action"
-fi
-
-jail="/etc/fail2ban/jail.local"
-if [[ "$MODE" == "force" || ! -f "$jail" ]]; then
-  cat <<'JAIL' >"$jail"
-# Fail2ban jail configuration
-# Parameters:
-#   findtime: time window to count retries
-#   bantime:  ban duration
-#   maxretry: maximum failed attempts
-[DEFAULT]
-backend = auto
-# 10 minutes time window
-findtime = 10m
-# ban for 1 hour
-bantime = 1h
-# allow up to 5 failures
-maxretry = 5
-[sshd]
-enabled = true
-backend = polling
-logpath = /var/log/auth.log
-action = sshd-match[name=sshd]
-JAIL
-  chmod 0644 "$jail"
-fi
-SCRIPT
-}
-
-fail2ban_diag() {
-  local cname="$1"
-  ui_caption "=== 诊断: fail2ban ==="
-  docker exec -u root "$cname" bash -lc '
-    echo "[fail2ban-client version]"; fail2ban-client -V 2>/dev/null | head -n1 || echo "(不可用)"
-    echo; echo "[process: sshd & rsyslogd]"; ps -ef | grep -E "(sshd|rsyslogd)\b" | grep -v grep || echo "(无进程)"
-    echo; echo "[sshd -T (key settings)]"; command -v sshd >/dev/null && sshd -T 2>/dev/null | grep -E "^(syslogfacility|loglevel|usepam)" || echo "(不可用)"
-    echo; echo "[rsyslogd detected]"; if command -v rsyslogd >/dev/null; then echo yes; else echo no; fi
-    echo; echo "[/etc/os-release]"; [[ -f /etc/os-release ]] && sed -n "1,20p" /etc/os-release || echo "(缺失)"
-    echo; echo "[/etc/apt/sources.list]"; [[ -f /etc/apt/sources.list ]] && sed -n "1,80p" /etc/apt/sources.list || echo "(缺失)"
-    echo; echo "[/etc/apt/sources.list.d]"; ls -l /etc/apt/sources.list.d 2>/dev/null || echo "(目录不存在)"; for f in /etc/apt/sources.list.d/*.list; do [[ -f "$f" ]] && { echo "---- $f (前 30 行)"; sed -n "1,30p" "$f"; }; done
-    echo; echo "[apt-cache policy fail2ban]"; apt-cache policy fail2ban 2>/dev/null || echo "(apt-cache 无法获取)"
-    echo; echo "[dpkg -s fail2ban]"; dpkg -s fail2ban 2>/dev/null | sed -n "1,40p" || echo "(未安装)"
-    echo; echo "[/etc/fail2ban/jail.local]"; [[ -f /etc/fail2ban/jail.local ]] && sed -n "1,120p" /etc/fail2ban/jail.local || echo "(缺失)"
-    echo; echo "[/var/log/fail2ban.log tail -n 20]"; [[ -f /var/log/fail2ban.log ]] && tail -n 20 /var/log/fail2ban.log || echo "(日志不存在)"
-    echo; echo "[/var/log/auth.log 关键 sshd 行]"; [[ -f /var/log/auth.log ]] && grep -iE "sshd|fail|invalid|refused" /var/log/auth.log | tail -n 30 || echo "(无记录)"
-  ' 2>/dev/null || true
-}
-
-rollback_fail2ban() {
-  local cname="$1"
-  docker exec -u root "$cname" bash -lc '
-    set -Eeuo pipefail
-    if command -v fail2ban-client >/dev/null 2>&1; then fail2ban-client -x stop >/dev/null 2>&1 || true; fi
-    DEBIAN_FRONTEND=noninteractive apt-get purge -y fail2ban >/dev/null 2>&1 || apt-get remove -y fail2ban >/dev/null 2>&1 || true
-    rm -f /etc/fail2ban/jail.local /etc/fail2ban/action.d/sshd-match.conf /usr/local/bin/fail2ban-sshd-match /var/log/fail2ban.log /etc/ssh/sshd_config.d/99-fail2ban-blocklist.conf || true
-    pkill -HUP -x sshd 2>/dev/null || true
-  ' || true
-  rm -f "$(fail2ban_meta_file "$cname")"
-}
-
-start_fail2ban() {
-  local cname="$1"
-  log_debug "Starting fail2ban in $cname"
-  docker exec -u root "$cname" bash -lc 'set -Eeuo pipefail
-command -v rsyslogd >/dev/null && ! pgrep -x rsyslogd >/dev/null && rsyslogd || true
-command -v fail2ban-client >/dev/null || {
-  echo "fail2ban-client 不存在" >&2
-  dpkg_info="$(dpkg -s fail2ban 2>/dev/null || true)"
-  echo "[dpkg -s fail2ban]" >&2
-  if [[ -n "$dpkg_info" ]]; then
-    printf "%s\n" "$dpkg_info" | sed "1,20p" >&2 || true
-  else
-    echo "(dpkg 未登记 fail2ban)" >&2
-  fi
-  echo "[apt-cache policy fail2ban]" >&2
-  apt_policy="$(apt-cache policy fail2ban 2>/dev/null || true)"
-  if [[ -n "$apt_policy" ]]; then
-    printf "%s\n" "$apt_policy" | sed "1,20p" >&2 || true
-  else
-    echo "(apt-cache 无法获取 fail2ban 信息)" >&2
-  fi
-  echo "[command -v fail2ban-client]" >&2
-  command -v fail2ban-client 2>/dev/null >&2 || echo "(command -v 无输出)" >&2
-  echo "[最近 apt term.log]" >&2
-  if [[ -f /var/log/apt/term.log ]]; then
-    tail -n 40 /var/log/apt/term.log >&2
-  else
-    echo "(未找到 /var/log/apt/term.log)" >&2
-  fi
-  exit 1
-}
-start_ok=false
-if fail2ban-client status >/dev/null 2>&1; then
-  fail2ban-client reload >/dev/null 2>&1 || true
-  start_ok=true
-else
-  if fail2ban-client -x start >/dev/null 2>&1 || service fail2ban start >/dev/null 2>&1 || /etc/init.d/fail2ban start >/dev/null 2>&1 || fail2ban-client start >/dev/null 2>&1; then
-    start_ok=true
-  fi
-fi
-if ! $start_ok; then
-  echo "=== Fail2ban 启动失败 ===" >&2
-  [[ -f /etc/fail2ban/jail.local ]] && { echo "[jail.local]" >&2; head -50 /etc/fail2ban/jail.local >&2; } || echo "(jail.local 缺失)" >&2
-  [[ -f /var/log/fail2ban.log ]] && { echo "[fail2ban.log]" >&2; tail -50 /var/log/fail2ban.log >&2; } || echo "(日志不存在)" >&2
-  exit 1
-fi
-fail2ban-client status sshd >/dev/null 2>&1 || { echo "sshd jail 未运行" >&2; exit 1; }
-' || return 1
-  return 0
-}
-
-resume_fail2ban_if_requested() {
-  local cname="$1" mode="${2:-check}"
-  [[ "$mode" != "force" ]] && ! fail2ban_requested "$cname" && return 0
-  running_container "$cname" || return 1
-  local apply_mode="keep"; [[ "$mode" == "force" ]] && apply_mode="force"
-  fail2ban_apply "$cname" "$apply_mode" || return 1
-  start_fail2ban "$cname" || return 1
-  return 0
-}
-
-fail2ban_status_report() {
-  local cname="$1"
-  running_container "$cname" || { warn "容器未运行"; return 1; }
-  docker exec -u root "$cname" bash -lc 'command -v fail2ban-client >/dev/null' || { warn "fail2ban 未安装"; return 1; }
-  ui_caption "整体状态:"; docker exec -u root "$cname" fail2ban-client status 2>/dev/null || true
-  echo; ui_caption "sshd 详情:"; docker exec -u root "$cname" fail2ban-client status sshd 2>/dev/null || true
-  echo; ui_caption "最近日志:"; docker exec -u root "$cname" bash -lc '[[ -f /var/log/fail2ban.log ]] && tail -30 /var/log/fail2ban.log || echo "(日志不存在)"' 2>/dev/null || true
-  echo; ui_caption "auth.log 近期 sshd 相关:"; docker exec -u root "$cname" bash -lc '[[ -f /var/log/auth.log ]] && grep -iE "sshd|fail|invalid|refused" /var/log/auth.log | tail -n 30 || echo "(无记录)"' 2>/dev/null || true
-}
-
-fail2ban_edit_config() {
-  local cname="$1"
-  running_container "$cname" || { warn "容器未运行"; return 1; }
-  if ! docker exec -u root "$cname" bash -lc '[[ -f /etc/fail2ban/jail.local ]]' 2>/dev/null; then
-    info "创建默认配置..."; fail2ban_apply "$cname" keep || { warn "创建失败"; return 1; }
-  fi
-  docker exec -it "$cname" bash -lc 'nano /etc/fail2ban/jail.local' || { warn "编辑器异常退出"; return 1; }
-  if docker exec -u root "$cname" fail2ban-client reload >/dev/null 2>&1; then
-    log "配置已重载"
-  else
-    warn "重载失败"; docker exec -u root "$cname" bash -lc 'tail -30 /var/log/fail2ban.log 2>/dev/null || true'
-  fi
-}
-
-op_enable_fail2ban() {
-  local cname="$1" mode="${2:-force}"
-  running_container "$cname" || { warn "容器未运行"; rm -f "$(fail2ban_meta_file "$cname")"; return 1; }
-  info "配置 fail2ban..."
-  if ! fail2ban_apply "$cname" "$mode"; then
-    warn "配置失败 (apt 或文件写入失败)"; rollback_fail2ban "$cname"; fail2ban_diag "$cname"; return 1
-  fi
-  if start_fail2ban "$cname"; then
-    echo "enabled" >"$(fail2ban_meta_file "$cname")"
-    log "Fail2ban 已启用"; fail2ban_status_report "$cname" || true
-  else
-    warn "启动失败，执行回滚并输出诊断"
-    fail2ban_diag "$cname"
-    rollback_fail2ban "$cname"
-    return 1
-  fi
-}
-
-op_disable_fail2ban() {
-  local cname="$1"
-  running_container "$cname" || { warn "容器未运行"; rm -f "$(fail2ban_meta_file "$cname")"; return 1; }
-  rollback_fail2ban "$cname"
-  log "Fail2ban 已移除"
-}
-
-fail2ban_menu() {
-  local cname="$1"
-  while true; do
-    clear
-    ui_title "安全配置 - Fail2ban" "实例: ${cname}"
-    local enabled=false; fail2ban_requested "$cname" && enabled=true
-    ui_caption "当前状态: $(fail2ban_menu_hint "$cname")"
-    ui_caption "配置文件: /etc/fail2ban/jail.local"
-    menu_option 1 "查看状态（含日志摘要）"
-    menu_option 2 "$([[ "$enabled" == true ]] && echo '重新应用配置并重启' || echo '启用 Fail2ban')"
-    menu_option 3 "编辑配置 (nano)"
-    menu_option 4 "重置为默认模板"
-    menu_option 5 "卸载 Fail2ban"
-    menu_option 0 "返回"
-    printf '%s' "$(color '0;37' '选择 → ')"; local choice; IFS= read -r choice
-    case "$choice" in
-      1) fail2ban_status_report "$cname" || true; pause_for_enter ;;
-      2) op_enable_fail2ban "$cname" "$([[ "$enabled" == true ]] && echo keep || echo force)"; pause_for_enter ;;
-      3) fail2ban_edit_config "$cname"; pause_for_enter ;;
-      4) confirm "确认重置配置？" && op_enable_fail2ban "$cname" force; pause_for_enter ;;
-      5) confirm "确认卸载 Fail2ban？" && op_disable_fail2ban "$cname"; pause_for_enter ;;
-      0) break ;;
-      *) warn "无效选择"; sleep 1 ;;
-    esac
-  done
-}
 
 # ========== 端口转发 ==========
 pf_name() { echo "$1-pf"; }
@@ -1487,7 +1186,7 @@ op_list_remove_forward() {
   for r in "${rows[@]}"; do
     local host container stat; IFS=$'\t' read -r host container stat <<<"$r"
     printf '%s  %s\n' "$(color '1;36' "[$i]")" "$(color '1;37' "${host} → ${container}")"
-    ui_caption "    代理状态：${stat}"
+    ui_caption "     代理状态：${stat}"
     ((i++))
   done
   printf '%s' "$(color '0;37' '输入编号删除映射（回车跳过） → ')" ; local idx; IFS= read -r idx
@@ -1510,7 +1209,9 @@ op_build_image() { local image="$1"; ui_title "构建镜像" "$image"; docker bu
 op_rebuild_image() { local image="$1"; ui_title "强制重建镜像" "$image"; docker build --no-cache -t "$image" "$WORKDIR" && log "重建完成" || err "重建失败"; }
 
 op_start_instance() {
-  local cname="$1" image="$2" pbase="${3:-$PORT_BASE_DEFAULT}"
+  local cname="$1" image="$2" pbase="${3:-$PORT_BASE_DEFAULT}" host_log_dir
+  host_log_dir="${WORKDIR}/${cname}/logs"
+  mkdir -p "${host_log_dir}"
   ensure_network
   if exists_container "$cname"; then
     if running_container "$cname"; then
@@ -1522,22 +1223,22 @@ op_start_instance() {
     local port; port="$(docker inspect -f '{{range .NetworkSettings.Ports}}{{(index . 0).HostPort}}{{end}}' "$cname")"
     wait_sshd_ready "$cname" "$port" || true
     ensure_home_perm "$cname"; set_random_password "$cname" || true
-    if fail2ban_requested "$cname" && ! resume_fail2ban_if_requested "$cname"; then warn "fail2ban 恢复失败，可在安全菜单中手动检查。"; fi
     status_of "$cname"; ssh_hint "$cname"; return 0
   fi
   if ! exists_image "$image"; then op_build_image "$image"; fi
   local port; port="$(pick_port_strict "$pbase" "$MAX_TRIES" || true)"; [[ -z "$port" ]] && { warn "未找到可用端口"; return 1; }
   info "创建并启动容器 $cname (镜像: $image，主机端口: $port)"
   docker run -d --name "$cname" \
+    --hostname "$cname" \
     --network "${NET_NAME}" \
     --restart unless-stopped \
+    -v "${host_log_dir}:/var/log/container_logs" \
     --memory "${DEFAULT_MEM}" --cpus "${DEFAULT_CPUS}" --pids-limit "${DEFAULT_PIDS}" \
     -l devbox.managed=true -l devbox.name="$cname" -l devbox.image="$image" \
     -l devbox.created="$(date -u +%FT%TZ)" -l devbox.port="$port" \
-    -p "${port}:22" "$image" /usr/sbin/sshd -D >/dev/null
+    -p "${port}:22" "$image" >/dev/null
   wait_sshd_ready "$cname" "$port" || true
   ensure_home_perm "$cname"; set_random_password "$cname" || true
-  if fail2ban_requested "$cname" && ! resume_fail2ban_if_requested "$cname"; then warn "fail2ban 恢复失败，可在安全菜单中手动检查。"; fi
   status_of "$cname"; ssh_hint "$cname"
 }
 
@@ -1555,7 +1256,7 @@ op_remove_container() {
   docker rm -f "$cname" >/dev/null
   rm -f "$(passfile_of "$cname")"
   docker rm -f "$(pf_name "$cname")" >/dev/null 2>&1 || true
-  rm -f "$(pf_meta_file "$cname")" "$(fail2ban_meta_file "$cname")"
+  rm -f "$(pf_meta_file "$cname")"
   log "已删除容器及其记录：$cname"
 }
 
@@ -1568,23 +1269,17 @@ op_logs_instance() {
     ui_title "日志查看" "$cname"
     ui_caption "提示: 跟随模式下按 Ctrl+C 返回上一级"
     menu_option 1 "Docker stdout/stderr (follow)" "容器标准输出/错误"
-    menu_option 2 "SSH auth.log (follow)" "/var/log/auth.log"
-    menu_option 3 "Fail2ban 日志 (follow)" "/var/log/fail2ban.log"
-    menu_option 4 "SSH auth.log 最近200行"
-    menu_option 5 "Fail2ban 最近200行"
+    menu_option 2 "SSH sshd.log (follow)" "/var/log/container_logs/sshd.log"
+    menu_option 3 "SSH sshd.log 最近200行"
     menu_option 0 "返回"
     printf '%s' "$(color '0;37' '选择操作 → ')"; local choice; IFS= read -r choice
     case "$choice" in
       1)
         follow_stream "Docker stdout/stderr" docker logs -f --tail 200 "$cname" ;;
       2)
-        follow_stream "SSH auth.log" docker exec -u root "$cname" bash -lc '[[ -f /var/log/auth.log ]] || : > /var/log/auth.log; tail -n 200 -F /var/log/auth.log' ;;
+        follow_stream "SSH sshd.log" docker exec -u root "$cname" bash -lc '[[ -f /var/log/container_logs/sshd.log ]] || : > /var/log/container_logs/sshd.log; tail -n 200 -F /var/log/container_logs/sshd.log' ;;
       3)
-        follow_stream "Fail2ban 日志" docker exec -u root "$cname" bash -lc '[[ -f /var/log/fail2ban.log ]] || : > /var/log/fail2ban.log; tail -n 200 -F /var/log/fail2ban.log' ;;
-      4)
-        docker exec -u root "$cname" bash -lc '[[ -f /var/log/auth.log ]] && tail -n 200 /var/log/auth.log || echo "(日志不存在)"'; pause_for_enter ;;
-      5)
-        docker exec -u root "$cname" bash -lc '[[ -f /var/log/fail2ban.log ]] && tail -n 200 /var/log/fail2ban.log || echo "(日志不存在)"'; pause_for_enter ;;
+        docker exec -u root "$cname" bash -lc '[[ -f /var/log/container_logs/sshd.log ]] && tail -n 200 /var/log/container_logs/sshd.log || echo "(日志不存在)"'; pause_for_enter ;;
       0) break ;;
       *) warn "无效选择"; sleep 1 ;;
     esac
@@ -1627,7 +1322,6 @@ instance_menu() {
     local password=""; if exists_container "$cname"; then status_of "$cname"; local pfile; pfile="$(passfile_of "$cname")"; [[ -f "$pfile" ]] && password="$(<"$pfile")"; else warn "容器尚未创建：$cname"; fi
     show_login_guidance "$cname" "$password"; show_forward_summary "$cname"
     if exists_container "$cname"; then ssh_hint "$cname"; fi
-    [[ ! -e /dev/null ]] || true
     echo
     menu_option 1 "Build 镜像" "当前镜像：$image"
     menu_option 2 "Start 启动 / 创建" "自动在 ${pbase}, $((pbase+100))... 中寻找可用端口"
@@ -1637,9 +1331,8 @@ instance_menu() {
     menu_option 6 "Rebuild 强制重建镜像" "忽略缓存"
     menu_option 7 "Regenerate 再次生成随机密码"
     menu_option 8 "Remove 删除容器" "不影响镜像"
-    menu_option 9 "Security 安全配置" "Fail2ban：$(fail2ban_menu_hint "$cname")"
-    menu_option 10 "Add Port Mapping" "新增代理容器进行端口转发"
-    menu_option 11 "Manage Port Mappings" "列出并可删除映射"
+    menu_option 9 "Add Port Mapping" "新增代理容器进行端口转发"
+    menu_option 10 "Manage Port Mappings" "列出并可删除映射"
     menu_option 0 "返回上级"
     printf '%s' "$(color '0;37' '选择操作 → ')"; local choice; IFS= read -r choice
     case "$choice" in
@@ -1650,10 +1343,9 @@ instance_menu() {
       5) op_logs_instance "$cname" ;;
       6) op_rebuild_image "$image"; pause_for_enter ;;
       7) op_rotate_password "$cname"; pause_for_enter ;;
-      8) op_remove_container "$cname"; pause_for_enter ;;
-      9) fail2ban_menu "$cname" ;;
-      10) op_add_forward "$cname"; pause_for_enter ;;
-      11) op_list_remove_forward "$cname"; pause_for_enter ;;
+      8) op_remove_container "$cname" && break; pause_for_enter ;; # 删除后退出菜单
+      9) op_add_forward "$cname"; pause_for_enter ;;
+      10) op_list_remove_forward "$cname"; pause_for_enter ;;
       0) break ;;
       *) warn "无效选择"; sleep 1 ;;
     esac
@@ -1675,21 +1367,23 @@ list_all_status() {
 }
 
 main_menu() {
-  clear
-  need_sudo && die_need_sudo
-  ui_title "DevBox 控制中心" "管理 / 创建多实例开发环境"
-  menu_option 1 "管理或创建实例"
-  menu_option 2 "构建默认镜像" "$IMAGE_DEFAULT"
-  menu_option 3 "查看所有实例状态"
-  menu_option 0 "退出"
-  printf '%s' "$(color '0;37' '选择操作 → ')"; local choice; IFS= read -r choice
-  case "$choice" in
-    1) local pick; pick="$(pick_instance_menu || true)"; [[ -z "${pick:-}" ]] && return; instance_menu "$pick" "$IMAGE_DEFAULT" "$PORT_BASE_DEFAULT" ;;
-    2) op_build_image "$IMAGE_DEFAULT"; pause_for_enter ;;
-    3) list_all_status; pause_for_enter ;;
-    0) exit 0 ;;
-    *) warn "无效选择"; sleep 1 ;;
-  esac
+  while true; do
+    clear
+    need_sudo && die_need_sudo
+    ui_title "DevBox 控制中心" "管理 / 创建多实例开发环境"
+    menu_option 1 "管理或创建实例"
+    menu_option 2 "构建默认镜像" "$IMAGE_DEFAULT"
+    menu_option 3 "查看所有实例状态"
+    menu_option 0 "退出"
+    printf '%s' "$(color '0;37' '选择操作 → ')"; local choice; IFS= read -r choice
+    case "$choice" in
+      1) local pick; pick="$(pick_instance_menu || true)"; [[ -z "${pick:-}" ]] || instance_menu "$pick" "$IMAGE_DEFAULT" "$PORT_BASE_DEFAULT" ;;
+      2) op_build_image "$IMAGE_DEFAULT"; pause_for_enter ;;
+      3) list_all_status; pause_for_enter ;;
+      0) exit 0 ;;
+      *) warn "无效选择"; sleep 1 ;;
+    esac
+  done
 }
 
 if [[ "${1:-}" == "cli" ]]; then
@@ -1700,7 +1394,7 @@ if [[ "${1:-}" == "cli" ]]; then
   exit $?
 fi
 
-while true; do main_menu; done
+main_menu
 EOF_DEVBOX
 
   # 一次性替换占位符
@@ -1710,7 +1404,10 @@ EOF_DEVBOX
     -e "s|__MAXTRIES__|$MAX_TRIES|g" \
     -e "s|__NETNAME__|$NET_NAME|g" \
     -e "s|__CNAMEPREFIX__|$CNAME_PREFIX|g" \
-    "$WORKDIR/devbox.sh"
+    "$WORKDIR/devbox.sh" || {
+      err "配置管理脚本 devbox.sh 失败"
+      exit 1
+    }
   chmod +x "$WORKDIR/devbox.sh"
 }
 
@@ -1739,6 +1436,7 @@ set_random_password_installer() {
   fi
   if docker exec -u root "$cname" bash -lc "command -v chpasswd >/dev/null && echo 'dev:${newpass}' | chpasswd"; then
     echo "$newpass" > "$pfile"
+    chmod 600 "$pfile" || warn "无法设置密码文件权限：$pfile"
     log "容器 dev 用户密码已更新：${newpass}"
     ui_caption "口令亦保存在 $pfile"
   else
@@ -1759,7 +1457,7 @@ start_first_instance() {
     --memory "${DEFAULT_MEM:-1g}" --cpus "${DEFAULT_CPUS:-1.0}" --pids-limit "${DEFAULT_PIDS:-256}" \
     -l devbox.managed=true -l devbox.name="$cname" -l devbox.image="$image" \
     -l devbox.created="$(date -u +%FT%TZ)" -l devbox.port="$port" \
-    -p "${port}:22" "$image" /usr/sbin/sshd -D >/dev/null
+    -p "${port}:22" "$image" >/dev/null
   wait_sshd_ready_installer "$cname" "$port" || true
   ensure_home_perm_installer "$cname"
   set_random_password_installer "$cname" || true
@@ -1770,11 +1468,11 @@ start_first_instance() {
   ip_addr="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cname" 2>/dev/null || echo '-')"
 
   ui_caption "实例信息："
-  printf "   • 名称：%s\n" "$(color '1;37' "$cname")"
-  printf "   • 状态：%s\n" "$(color '1;37' "$state")"
-  printf "   • 镜像：%s\n" "$(color '1;37' "$image_used")"
-  printf "   • 主机端口：%s\n" "$(color '1;37' "$port")"
-  printf "   • 容器 IP：%s\n" "$(color '1;37' "$ip_addr")"
+  printf "    • 名称：%s\n" "$(color '1;37' "$cname")"
+  printf "    • 状态：%s\n" "$(color '1;37' "$state")"
+  printf "    • 镜像：%s\n" "$(color '1;37' "$image_used")"
+  printf "    • 主机端口：%s\n" "$(color '1;37' "$port")"
+  printf "    • 容器 IP：%s\n" "$(color '1;37' "$ip_addr")"
   ui_caption "SSH 示例：ssh dev@<服务器IP> -p ${port}"
   [[ -f "$META_DIR/${cname}.pass" ]] && ui_caption "密码文件：$META_DIR/${cname}.pass"
 }
@@ -1883,6 +1581,8 @@ EOF
 
   expect_success "write_min_dockerfile 生成文件" write_min_dockerfile
   expect_equals "生成 Dockerfile 存在" "1" "$( [[ -f "$WORKDIR/Dockerfile" ]] && echo 1 || echo 0 )"
+  expect_success "write_entrypoint_script 生成文件" write_entrypoint_script
+  expect_equals "生成 entrypoint.sh 存在" "1" "$( [[ -f "$WORKDIR/entrypoint.sh" ]] && echo 1 || echo 0 )"
   echo "FROM scratch" >"$WORKDIR/Dockerfile"
   expect_success "write_min_dockerfile 不覆盖已有文件" write_min_dockerfile
   expect_equals "现有 Dockerfile 保持不变" "FROM scratch" "$(head -n1 "$WORKDIR/Dockerfile")"
@@ -1914,11 +1614,11 @@ EOF
   printf '\n共执行 %d 项检查。\n' "$total"
   if ((failures>0)); then
     err "自检失败，共 ${failures} 项未通过"
-    exit 1
+    return 1
   fi
 
   log "自检通过"
-  exit 0
+  return 0
 }
 
 # ========== 主流程 ==========
@@ -1929,6 +1629,7 @@ main() {
   init_prompt
   ui_title "构建与配置" "正在准备基础镜像与管理工具。"
   write_min_dockerfile
+  write_entrypoint_script
   check_dockerfile_compatibility
   build_image
   ensure_network "$NET_NAME"
@@ -1944,16 +1645,19 @@ main() {
   echo
   log "安装完成"
   ui_caption "接下来可以："
-  printf "   • 管理脚本：%s\n" "$(color '1;37' "$WORKDIR/devbox.sh")"
-  printf "   • 进入菜单：%s\n" "$(color '1;37' "cd $WORKDIR && ./devbox.sh")"
-  printf "   • 端口转发：%s\n" "$(color '1;37' '使用菜单中的 Port Mapping 工具按需开放服务。')"
+  printf "    • 管理脚本：%s\n" "$(color '1;37' "$WORKDIR/devbox.sh")"
+  printf "    • 进入菜单：%s\n" "$(color '1;37' "cd $WORKDIR && ./devbox.sh")"
+  printf "    • 端口转发：%s\n" "$(color '1;37' '使用菜单中的 Port Mapping 工具按需开放服务。')"
 }
 
 parse_args "$@"
 
 if (( RUN_SELF_TEST )); then
-  run_self_tests
-  exit 0
+  if run_self_tests; then
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
 main
